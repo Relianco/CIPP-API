@@ -1,11 +1,14 @@
 # Deploys the master branch to the new Canada Central app cipp-fn-cac (P0v3 Linux).
-# Lives on branch deploy-cac and runs only on manual trigger so that pushes to master keep
+# Lives on branch deploy-cac and runs on pushes to deploy-cac only, so that pushes to master keep
 # deploying only the current production app until cutover. At cutover this file moves to master
 # with an `on: push` trigger and master_cippdtdpl.yml is disabled.
 name: Deploy master to Azure Function App - cipp-fn-cac (Canada Central)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - deploy-cac
 
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
