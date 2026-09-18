@@ -134,8 +134,28 @@ function Invoke-CIPPStandardAntiPhishPolicy {
         $CurrentState.Enabled = $ExistingRule.State -eq 'Enabled'
     }
 
+    # User impersonation protection only covers names on TargetedUsersToProtect, and the stock standard never fills
+    # it, so it protects nobody. Every licensed, enabled member belongs on it (Exchange caps the list at 350). We only
+    # ever add: manual entries stay, and a leaver falls off when the licence does, not before.
+    $MissingProtectedUsers = @()
+    if ($MDOLicensed) {
+        try {
+            $LicensedUsers = New-GraphGetRequest -uri "https://graph.microsoft.com/beta/users?`$filter=accountEnabled eq true and userType eq 'Member'&`$select=displayName,userPrincipalName,assignedLicenses&`$top=999" -tenantid $Tenant -ComplexFilter |
+                Where-Object { $_.assignedLicenses.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($_.displayName) }
+            $ProtectedNow = @($ExistingPolicy.TargetedUsersToProtect | ForEach-Object { ($_ -split ';')[-1].ToLower() })
+            $MissingProtectedUsers = @($LicensedUsers | Where-Object { $_.userPrincipalName.ToLower() -notin $ProtectedNow } |
+                    ForEach-Object { "$($_.displayName);$($_.userPrincipalName)" } | Sort-Object -Unique)
+            $Room = 350 - @($ExistingPolicy.TargetedUsersToProtect).Count
+            if ($MissingProtectedUsers.Count -gt $Room) { $MissingProtectedUsers = @($MissingProtectedUsers | Select-Object -First ([Math]::Max($Room, 0))) }
+        } catch {
+            Write-LogMessage -API 'Standards' -tenant $Tenant -message "Could not read licensed users for TargetedUsersToProtect: $($_.Exception.Message)" -sev Warning
+        }
+        if ($CurrentState) { $CurrentState | Add-Member -NotePropertyName ProtectedUsersMissing -NotePropertyValue $MissingProtectedUsers.Count -Force }
+    }
+
     if ($MDOLicensed) {
         $StateIsCorrect = ($CurrentState.Name -eq $PolicyName) -and
+                          ($MissingProtectedUsers.Count -eq 0) -and
                           ($CurrentState.Enabled -eq $true) -and
                           ($CurrentState.PhishThresholdLevel -eq $Settings.PhishThresholdLevel) -and
                           ($CurrentState.EnableMailboxIntelligence -eq $true) -and
@@ -159,7 +179,7 @@ function Invoke-CIPPStandardAntiPhishPolicy {
                           ($CurrentState.EnableTargetedUserProtection -eq $true) -and
                           ($CurrentState.EnableOrganizationDomainsProtection -eq $true)
 
-        $CurrentValue = $CurrentState | Select-Object Name, Enabled, PhishThresholdLevel, EnableMailboxIntelligence, EnableMailboxIntelligenceProtection, EnableSpoofIntelligence, EnableFirstContactSafetyTips, EnableSimilarUsersSafetyTips, EnableSimilarDomainsSafetyTips, EnableUnusualCharactersSafetyTips, EnableUnauthenticatedSender, EnableViaTag, AuthenticationFailAction, SpoofQuarantineTag, MailboxIntelligenceProtectionAction, MailboxIntelligenceQuarantineTag, TargetedUserProtectionAction, TargetedUserQuarantineTag, TargetedDomainProtectionAction, TargetedDomainQuarantineTag, EnableOrganizationDomainsProtection, EnableTargetedDomainsProtection, EnableTargetedUserProtection
+        $CurrentValue = $CurrentState | Select-Object Name, Enabled, PhishThresholdLevel, EnableMailboxIntelligence, EnableMailboxIntelligenceProtection, EnableSpoofIntelligence, EnableFirstContactSafetyTips, EnableSimilarUsersSafetyTips, EnableSimilarDomainsSafetyTips, EnableUnusualCharactersSafetyTips, EnableUnauthenticatedSender, EnableViaTag, AuthenticationFailAction, SpoofQuarantineTag, MailboxIntelligenceProtectionAction, MailboxIntelligenceQuarantineTag, TargetedUserProtectionAction, TargetedUserQuarantineTag, TargetedDomainProtectionAction, TargetedDomainQuarantineTag, EnableOrganizationDomainsProtection, EnableTargetedDomainsProtection, EnableTargetedUserProtection, ProtectedUsersMissing
         $ExpectedValue = [PSCustomObject]@{
             Name                                 = $PolicyName
             Enabled                              = $true
@@ -184,6 +204,7 @@ function Invoke-CIPPStandardAntiPhishPolicy {
             EnableTargetedDomainsProtection      = $true
             EnableTargetedUserProtection         = $true
             EnableOrganizationDomainsProtection  = $true
+            ProtectedUsersMissing                = 0
         }
     } else {
         $StateIsCorrect = ($CurrentState.Name -eq $PolicyName) -and
@@ -246,6 +267,9 @@ function Invoke-CIPPStandardAntiPhishPolicy {
                     EnableTargetedDomainsProtection     = $true
                     EnableTargetedUserProtection        = $true
                     EnableOrganizationDomainsProtection = $true
+                }
+                if ($MissingProtectedUsers.Count -gt 0) {
+                    $cmdParams.TargetedUsersToProtect = @(@($ExistingPolicy.TargetedUsersToProtect) + $MissingProtectedUsers | Where-Object { $_ })
                 }
             } else {
                 $cmdParams = @{
