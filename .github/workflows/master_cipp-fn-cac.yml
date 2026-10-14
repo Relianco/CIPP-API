@@ -28,3 +28,15 @@ jobs:
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_CIPPFNCAC }}
+
+      # A failed deploy leaves the API behind the frontend (2026-10-14: Kudu 503 twice, BEC broke).
+      # Posts a CIPP-shaped single alert so n8n files an Internal RCS ticket.
+      - name: 'Alert n8n on failure'
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.N8N_CIPP_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n --arg m "CIPP API deploy failed (run ${{ github.run_id }}): cipp-fn-cac is not on the latest master, so the frontend and API may be on different versions. If Kudu returned 503, restart the function app, then re-run: $RUN_URL" \
+            '{Tenant:"None", API:"Deploy", Severity:"Alert", Username:"GitHub Actions", sentAsAlert:true, Message:$m}' \
+            | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$WEBHOOK"
